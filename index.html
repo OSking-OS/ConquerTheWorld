@@ -514,6 +514,28 @@ textarea.cap-input{width:100%;border:1.5px solid var(--db-border);border-radius:
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 
 <script>
+/* ============== Gestori di errore: DEVONO essere la prima cosa eseguita ============== */
+function showFatalBanner(msg){
+  let banner = document.getElementById('fatalErrorBanner');
+  if(!banner){
+    banner = document.createElement('div');
+    banner.id = 'fatalErrorBanner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#E5484D;color:#fff;padding:12px 16px;font-family:sans-serif;font-size:13px;line-height:1.5;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.25);';
+    document.body.appendChild(banner);
+  }
+  banner.textContent = msg;
+}
+window.addEventListener('error', function(e){
+  console.error('Errore JS non gestito:', e.error || e.message);
+  showFatalBanner('Errore JavaScript: ' + (e.message || 'sconosciuto') + ' (riga ' + (e.lineno||'?') + ')');
+});
+window.addEventListener('unhandledrejection', function(e){
+  const reason = e.reason;
+  console.error('Promise non gestita:', reason);
+  const m = reason && (reason.code || reason.message) ? (reason.code || reason.message) : 'sconosciuto';
+  showFatalBanner('Errore: ' + m);
+});
+
 /* =====================================================================
    DAILYGRAM 2.0 — multiplayer demo app (Firebase Auth + Firestore)
 
@@ -535,10 +557,20 @@ const firebaseConfig = {
   appId: "1:551413179559:web:c8936cbe38816a4b0de782",
   measurementId: "G-V261XWWLMN"
 };
-firebase.initializeApp(firebaseConfig);
-const auth = firebase.auth();
-const dbFs = firebase.firestore();
-const FV = firebase.firestore.FieldValue;
+let auth = null, dbFs = null, FV = null, FIREBASE_OK = false;
+try{
+  if(typeof firebase === 'undefined'){
+    throw new Error('Le librerie Firebase non si sono caricate (CDN bloccato da rete, estensione o blocco annunci).');
+  }
+  firebase.initializeApp(firebaseConfig);
+  auth = firebase.auth();
+  dbFs = firebase.firestore();
+  FV = firebase.firestore.FieldValue;
+  FIREBASE_OK = true;
+}catch(err){
+  console.error('Errore inizializzazione Firebase:', err);
+  showFatalBanner('Impossibile inizializzare Firebase: ' + err.message + ' — controlla la connessione, eventuali blocchi pubblicità/estensioni, oppure le chiavi firebaseConfig nel file.');
+}
 
 /* ---------------- Icons ---------------- */
 const ICONS = {
@@ -650,17 +682,6 @@ let unsubMe=null, unsubPosts=null, unsubNotifs=null, unsubConvs=null, unsubActiv
 let searchDebounce = null;
 
 /* ---------------- Init ---------------- */
-window.addEventListener('error', e => {
-  console.error('Errore JS non gestito:', e.error || e.message);
-  toast('Errore JS: ' + (e.message || 'sconosciuto'), true);
-});
-window.addEventListener('unhandledrejection', e => {
-  const reason = e.reason;
-  console.error('Promise non gestita:', reason);
-  const msg = reason && (reason.code || reason.message) ? (reason.code || reason.message) : 'sconosciuto';
-  toast('Errore: ' + msg, true);
-});
-
 document.addEventListener('DOMContentLoaded', () => {
   buildAvatarPicker();
   buildLangGrid('langGrid');
@@ -668,6 +689,17 @@ document.addEventListener('DOMContentLoaded', () => {
   attachGlobalListeners();
 
   if(currentLang){ applyLanguage(); }
+
+  if(!FIREBASE_OK){
+    document.getElementById('loadingScreen').classList.add('hidden');
+    if(!currentLang){
+      document.getElementById('langGateScreen').classList.remove('hidden');
+    } else {
+      applyLanguage();
+      document.getElementById('authScreen').classList.remove('hidden');
+    }
+    return; // niente da fare con Firebase non inizializzato: il banner rosso in alto spiega perché
+  }
 
   auth.onAuthStateChanged(async user => {
     document.getElementById('loadingScreen').classList.add('hidden');
@@ -694,6 +726,15 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('appShell').classList.add('hidden');
     }
   });
+
+  setTimeout(() => {
+    if(!document.getElementById('loadingScreen').classList.contains('hidden')){
+      showFatalBanner('Firebase non risponde da troppo tempo. Controlla la connessione e che il progetto Firebase sia configurato correttamente.');
+      document.getElementById('loadingScreen').classList.add('hidden');
+      if(!currentLang){ document.getElementById('langGateScreen').classList.remove('hidden'); }
+      else { applyLanguage(); document.getElementById('authScreen').classList.remove('hidden'); }
+    }
+  }, 9000);
 });
 
 function buildLangGrid(containerId){
