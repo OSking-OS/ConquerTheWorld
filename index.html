@@ -484,8 +484,14 @@ textarea.cap-input{width:100%;border:1.5px solid var(--db-border);border-radius:
         <button class="pill-btn ghost" data-action="triggerAvatarEdit" data-i18n="changePhotoBtn"></button>
         <input type="file" id="editAvatarInput" accept="image/*" class="hidden">
       </div>
+      <div class="auth-field"><label data-i18n="usernameLabel"></label><input id="editUsernameInput" autocomplete="off"></div>
       <div class="auth-field"><label data-i18n="fullNameLabel"></label><input id="editNameInput"></div>
       <div class="auth-field"><label data-i18n="bioLabel"></label><textarea id="editBioInput" style="min-height:60px;"></textarea></div>
+      <div class="auth-field" id="editPasswordConfirmField" style="display:none;">
+        <label>Password attuale (per confermare il cambio di nome utente)</label>
+        <input id="editPasswordConfirmInput" type="password" autocomplete="off">
+      </div>
+      <div id="editProfileErrorBox" class="auth-error-box hidden"></div>
       <button class="btn-primary" data-action="saveProfileEdit" data-i18n="saveChangesBtn"></button>
     </div>
   </div>
@@ -894,6 +900,18 @@ function requireMe(){
   if(me) return true;
   toast('Sessione non disponibile: ricarica la pagina ed effettua di nuovo il login.', true);
   return false;
+}
+async function syncOwnPostsDenormalizedInfo(){
+  if(!me) return;
+  const mine = allPosts.filter(p => p.authorUid === me.uid);
+  if(!mine.length) return;
+  const batch = dbFs.batch();
+  mine.forEach(p => {
+    batch.update(dbFs.collection('posts').doc(p.id), {
+      authorUsername: me.username, authorName: me.name, authorAvatar: me.avatar
+    });
+  });
+  try{ await batch.commit(); }catch(err){ console.error('Sincronizzazione post non riuscita', err); }
 }
 
 async function getUserCached(uid){
@@ -1389,19 +1407,62 @@ function hintFollowToChat(){ toast(t('followToChatHint')); }
 function openEditProfile(){
   if(!requireMe()) return;
   document.getElementById('editAvatarPreview').src = me.avatar;
+  document.getElementById('editUsernameInput').value = me.username;
   document.getElementById('editNameInput').value = me.name;
   document.getElementById('editBioInput').value = me.bio || '';
+  document.getElementById('editPasswordConfirmField').style.display = 'none';
+  document.getElementById('editPasswordConfirmInput').value = '';
+  document.getElementById('editProfileErrorBox').classList.add('hidden');
   document.getElementById('modalEditProfile').classList.remove('hidden');
 }
 async function saveProfileEdit(){
   if(!requireMe()) return;
+  const errBox = document.getElementById('editProfileErrorBox');
+  errBox.classList.add('hidden');
   const name = document.getElementById('editNameInput').value.trim() || me.name;
   const bio = document.getElementById('editBioInput').value.trim();
+  const newUsername = sanitizeUsername(document.getElementById('editUsernameInput').value);
+  const oldUsername = me.username;
+
+  if(!newUsername){
+    errBox.textContent = 'Il nome utente non può essere vuoto.';
+    errBox.classList.remove('hidden');
+    return;
+  }
+
+  if(newUsername !== oldUsername){
+    const password = document.getElementById('editPasswordConfirmInput').value;
+    if(!password){
+      document.getElementById('editPasswordConfirmField').style.display = 'block';
+      errBox.textContent = 'Stai cambiando il nome utente: inserisci la password attuale per confermare.';
+      errBox.classList.remove('hidden');
+      return;
+    }
+    try{
+      const credential = firebase.auth.EmailAuthProvider.credential(emailFor(oldUsername), password);
+      await auth.currentUser.reauthenticateWithCredential(credential);
+      await auth.currentUser.updateEmail(emailFor(newUsername));
+    }catch(err){
+      console.error('Errore cambio username:', err);
+      if(err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential'){
+        errBox.textContent = 'Password sbagliata, riprova.';
+      } else if(err.code === 'auth/email-already-in-use'){
+        errBox.textContent = 'Questo nome utente è già usato da un altro account.';
+      } else {
+        errBox.textContent = 'Errore: ' + err.code;
+      }
+      errBox.classList.remove('hidden');
+      return;
+    }
+  }
+
   try{
-    await dbFs.collection('users').doc(me.uid).update({name, bio});
+    await dbFs.collection('users').doc(me.uid).update({name, bio, username: newUsername});
+    document.getElementById('editPasswordConfirmField').style.display = 'none';
     closeModal(null,'modalEditProfile');
     toast(t('profileUpdated'));
-  }catch(err){ reportFsError('saveProfileEdit', err); }
+    syncOwnPostsDenormalizedInfo();
+  }catch(err){ reportFsError('saveProfileEdit', err, 'editProfileErrorBox'); }
 }
 function triggerAvatarEdit(){ document.getElementById('editAvatarInput').click(); }
 
@@ -1548,10 +1609,10 @@ function attachGlobalListeners(){
     });
   });
   document.getElementById('editAvatarInput').addEventListener('change', e=>{
-    const file = e.target.files[0]; if(!file || !me) return;
+    const file = e.target.files[0]; if(!file || !requireMe()) return;
     resizeImageFile(file, 360, 0.8, async dataUrl=>{
       document.getElementById('editAvatarPreview').src = dataUrl;
-      try{ await dbFs.collection('users').doc(me.uid).update({avatar: dataUrl}); }
+      try{ await dbFs.collection('users').doc(me.uid).update({avatar: dataUrl}); syncOwnPostsDenormalizedInfo(); }
       catch(err){ reportFsError('editAvatar', err); }
     });
   });
